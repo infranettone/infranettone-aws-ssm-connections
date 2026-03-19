@@ -17,12 +17,15 @@ show_current_context() {
 }
 
 show_secret_preview() {
+  local secret_string=""
   local secret_kind="plain-text"
   local app_name=""
 
-  if secret_string_is_json; then
+  secret_string="$(fetch_current_secret_string)"
+
+  if secret_string_is_json "$secret_string"; then
     secret_kind="json"
-    app_name="$(get_secret_json_field "appName" || true)"
+    app_name="$(get_secret_json_field "appName" "$secret_string" || true)"
   fi
 
   info "Secret loaded successfully."

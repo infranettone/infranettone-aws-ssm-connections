@@ -101,15 +101,34 @@ fetch_secret_string() {
 }
 
 secret_string_is_json() {
+  local secret_string="${1:-}"
+
+  if [[ -z "$secret_string" ]]; then
+    secret_string="$(fetch_current_secret_string)"
+  fi
+
   require_command jq
-  jq -e . >/dev/null 2>&1 <<<"$SECRET_STRING"
+  jq -e . >/dev/null 2>&1 <<<"$secret_string"
 }
 
 get_secret_json_field() {
   local field_name="$1"
+  local secret_string="${2:-}"
 
-  secret_string_is_json || die "Current secret is not valid JSON."
-  jq -r --arg key "$field_name" '.[$key] // empty' <<<"$SECRET_STRING"
+  if [[ -z "$secret_string" ]]; then
+    secret_string="$(fetch_current_secret_string)"
+  fi
+
+  secret_string_is_json "$secret_string" || die "Current secret is not valid JSON."
+  jq -r --arg key "$field_name" '.[$key] // empty' <<<"$secret_string"
+}
+
+fetch_current_secret_string() {
+  for key in AWS_PROFILE AWS_REGION AWS_SECRET_NAME; do
+    [[ -n "${!key:-}" ]] || die "Missing required AWS context value: $key"
+  done
+
+  fetch_secret_string "$AWS_PROFILE" "$AWS_REGION" "$AWS_SECRET_NAME"
 }
 
 save_config() {
@@ -119,7 +138,6 @@ save_config() {
 AWS_PROFILE=$(printf "%q" "$AWS_PROFILE")
 AWS_REGION=$(printf "%q" "$AWS_REGION")
 AWS_SECRET_NAME=$(printf "%q" "$AWS_SECRET_NAME")
-SECRET_STRING=$(printf "%q" "$SECRET_STRING")
 EOF
 
   chmod 600 "$config_file"
@@ -128,17 +146,29 @@ EOF
 load_config() {
   local config_file="$1"
   local key=""
+  local had_legacy_secret_string="false"
 
   [[ -f "$config_file" ]] || die "Config file not found: $config_file"
 
   # shellcheck disable=SC1090
   source "$config_file"
 
-  declare -g AWS_PROFILE AWS_REGION AWS_SECRET_NAME SECRET_STRING
+  if [[ -n "${SECRET_STRING:-}" ]]; then
+    had_legacy_secret_string="true"
+  fi
 
-  for key in AWS_PROFILE AWS_REGION AWS_SECRET_NAME SECRET_STRING; do
+  declare -g AWS_PROFILE AWS_REGION AWS_SECRET_NAME
+
+  unset -v SECRET_STRING 2>/dev/null || true
+
+  for key in AWS_PROFILE AWS_REGION AWS_SECRET_NAME; do
     [[ -n "${!key:-}" ]] || die "Config file is missing required value: $key"
   done
+
+  if [[ "$had_legacy_secret_string" == "true" ]]; then
+    save_config "$config_file"
+    info "Legacy secret value removed from $config_file"
+  fi
 }
 
 bootstrap_aws_context() {
@@ -157,9 +187,6 @@ bootstrap_aws_context() {
   mapfile -t secrets < <(list_secret_names "$AWS_PROFILE" "$AWS_REGION")
   declare -g AWS_SECRET_NAME
   AWS_SECRET_NAME="$(select_from_options $'Select the AWS secret: ' secrets)"
-
-  declare -g SECRET_STRING
-  SECRET_STRING="$(fetch_secret_string "$AWS_PROFILE" "$AWS_REGION" "$AWS_SECRET_NAME")"
 }
 
 configure_and_save_context() {
