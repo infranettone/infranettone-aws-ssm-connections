@@ -85,6 +85,54 @@ list_secret_names() {
   printf "%s\n" "${sorted_secret_names[@]}"
 }
 
+list_ec2_instances() {
+  local profile="$1"
+  local region="$2"
+  local instance_output=""
+  local line=""
+  local instance_id=""
+  local instance_name=""
+  local private_ip=""
+  local state_name=""
+  local -a instance_options=()
+  local -a sorted_instance_options=()
+
+  require_command aws
+
+  instance_output="$(aws ec2 describe-instances \
+    --profile "$profile" \
+    --region "$region" \
+    --query "Reservations[].Instances[].[InstanceId, Tags[?Key=='Name']|[0].Value, PrivateIpAddress, State.Name]" \
+    --output text \
+    2>/dev/null || true)"
+
+  [[ -n "$instance_output" ]] || die "No EC2 instances found in region '$region' for profile '$profile'."
+
+  while IFS=$'\t' read -r instance_id instance_name private_ip state_name; do
+    [[ -n "${instance_id:-}" ]] || continue
+    [[ "${instance_id:-}" == "None" ]] && continue
+
+    if [[ -z "${instance_name:-}" || "${instance_name:-}" == "None" ]]; then
+      instance_name="unnamed"
+    fi
+
+    if [[ -z "${private_ip:-}" || "${private_ip:-}" == "None" ]]; then
+      private_ip="no-private-ip"
+    fi
+
+    if [[ -z "${state_name:-}" || "${state_name:-}" == "None" ]]; then
+      state_name="unknown"
+    fi
+
+    instance_options+=("$instance_id | $instance_name | $private_ip | $state_name")
+  done <<<"$instance_output"
+
+  [[ "${#instance_options[@]}" -gt 0 ]] || die "No EC2 instances found in region '$region' for profile '$profile'."
+
+  mapfile -t sorted_instance_options < <(printf "%s\n" "${instance_options[@]}" | sort)
+  printf "%s\n" "${sorted_instance_options[@]}"
+}
+
 fetch_secret_string() {
   local profile="$1"
   local region="$2"
@@ -139,6 +187,7 @@ AWS_PROFILE=$(printf "%q" "$AWS_PROFILE")
 AWS_REGION=$(printf "%q" "$AWS_REGION")
 AWS_SECRET_NAME=$(printf "%q" "$AWS_SECRET_NAME")
 CONNECTION_TARGET=$(printf "%q" "$CONNECTION_TARGET")
+RDS_BASTION_INSTANCE_ID=$(printf "%q" "${RDS_BASTION_INSTANCE_ID:-}")
 EOF
 
   chmod 600 "$config_file"
@@ -158,7 +207,7 @@ load_config() {
     had_legacy_secret_string="true"
   fi
 
-  declare -g AWS_PROFILE AWS_REGION AWS_SECRET_NAME CONNECTION_TARGET
+  declare -g AWS_PROFILE AWS_REGION AWS_SECRET_NAME CONNECTION_TARGET RDS_BASTION_INSTANCE_ID
 
   unset -v SECRET_STRING 2>/dev/null || true
 
@@ -184,6 +233,28 @@ select_connection_target() {
   CONNECTION_TARGET="$(select_from_options $'What do you want to connect to? ' connection_targets)"
 }
 
+select_rds_bastion_instance() {
+  local -a instance_options=()
+  local selected_instance=""
+
+  mapfile -t instance_options < <(list_ec2_instances "$AWS_PROFILE" "$AWS_REGION")
+  selected_instance="$(select_from_options $'Which EC2 bastion instance do you want to connect to via SSM? ' instance_options)"
+
+  declare -g RDS_BASTION_INSTANCE_ID
+  RDS_BASTION_INSTANCE_ID="${selected_instance%% | *}"
+}
+
+configure_connection_target_details() {
+  declare -g RDS_BASTION_INSTANCE_ID
+  RDS_BASTION_INSTANCE_ID=""
+
+  case "${CONNECTION_TARGET:-}" in
+    "RDS")
+      select_rds_bastion_instance
+      ;;
+  esac
+}
+
 bootstrap_aws_context() {
   local -a profiles=()
   local -a regions=()
@@ -202,6 +273,7 @@ bootstrap_aws_context() {
   AWS_SECRET_NAME="$(select_from_options $'Select the AWS secret: ' secrets)"
 
   select_connection_target
+  configure_connection_target_details
 }
 
 configure_and_save_context() {
@@ -212,10 +284,26 @@ configure_and_save_context() {
 
 ensure_optional_context() {
   local config_file="$1"
+  local needs_save="false"
 
   if [[ -z "${CONNECTION_TARGET:-}" ]]; then
     info "Connection target not configured yet."
     select_connection_target
+    needs_save="true"
+  fi
+
+  if [[ "${CONNECTION_TARGET:-}" == "RDS" && -z "${RDS_BASTION_INSTANCE_ID:-}" ]]; then
+    info "RDS bastion instance not configured yet."
+    select_rds_bastion_instance
+    needs_save="true"
+  fi
+
+  if [[ "${CONNECTION_TARGET:-}" != "RDS" && -n "${RDS_BASTION_INSTANCE_ID:-}" ]]; then
+    RDS_BASTION_INSTANCE_ID=""
+    needs_save="true"
+  fi
+
+  if [[ "$needs_save" == "true" ]]; then
     save_config "$config_file"
     info "Configuration updated in $config_file"
   fi

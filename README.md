@@ -5,6 +5,7 @@ Minimal template for projects that need:
 - Execution inside Docker.
 - Bash scripts organized by `entrypoints` and `lib`.
 - Interactive selection of `AWS profile`, `AWS region`, `AWS secret`, and connection target.
+  For `RDS`, it also prompts for the EC2 bastion instance to use via SSM.
 - Local persistence of the AWS context in `config.txt` without storing secret values.
 
 ## Structure
@@ -25,7 +26,7 @@ On the first run:
 
 1. Starts the container.
 2. Prompts for the AWS profile, region, secret, and connection target.
-3. Saves only the AWS profile, region, secret name, and connection target to `config.txt`.
+3. Saves only the AWS profile, region, secret name, connection target, and any target-specific settings to `config.txt`.
 
 ## Requirements
 

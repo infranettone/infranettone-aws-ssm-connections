@@ -15,6 +15,10 @@ show_current_context() {
   info "  AWS region: $AWS_REGION"
   info "  AWS secret: $AWS_SECRET_NAME"
   info "  Connection target: $CONNECTION_TARGET"
+
+  if [[ "${CONNECTION_TARGET:-}" == "RDS" && -n "${RDS_BASTION_INSTANCE_ID:-}" ]]; then
+    info "  RDS bastion instance: $RDS_BASTION_INSTANCE_ID"
+  fi
 }
 
 show_secret_preview() {
