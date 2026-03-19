@@ -14,6 +14,7 @@ show_current_context() {
   info "  AWS profile: $AWS_PROFILE"
   info "  AWS region: $AWS_REGION"
   info "  AWS secret: $AWS_SECRET_NAME"
+  info "  Connection target: $CONNECTION_TARGET"
 }
 
 show_secret_preview() {

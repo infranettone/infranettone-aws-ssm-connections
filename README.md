@@ -4,7 +4,7 @@ Minimal template for projects that need:
 
 - Execution inside Docker.
 - Bash scripts organized by `entrypoints` and `lib`.
-- Interactive selection of `AWS profile`, `AWS region`, and `AWS secret`.
+- Interactive selection of `AWS profile`, `AWS region`, `AWS secret`, and connection target.
 - Local persistence of the AWS context in `config.txt` without storing secret values.
 
 ## Structure
@@ -24,8 +24,8 @@ Minimal template for projects that need:
 On the first run:
 
 1. Starts the container.
-2. Prompts for the AWS profile, region, and secret.
-3. Saves only the AWS profile, region, and secret name to `config.txt`.
+2. Prompts for the AWS profile, region, secret, and connection target.
+3. Saves only the AWS profile, region, secret name, and connection target to `config.txt`.
 
 ## Requirements
 

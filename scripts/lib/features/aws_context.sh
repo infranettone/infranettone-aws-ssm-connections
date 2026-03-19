@@ -138,6 +138,7 @@ save_config() {
 AWS_PROFILE=$(printf "%q" "$AWS_PROFILE")
 AWS_REGION=$(printf "%q" "$AWS_REGION")
 AWS_SECRET_NAME=$(printf "%q" "$AWS_SECRET_NAME")
+CONNECTION_TARGET=$(printf "%q" "$CONNECTION_TARGET")
 EOF
 
   chmod 600 "$config_file"
@@ -157,7 +158,7 @@ load_config() {
     had_legacy_secret_string="true"
   fi
 
-  declare -g AWS_PROFILE AWS_REGION AWS_SECRET_NAME
+  declare -g AWS_PROFILE AWS_REGION AWS_SECRET_NAME CONNECTION_TARGET
 
   unset -v SECRET_STRING 2>/dev/null || true
 
@@ -169,6 +170,18 @@ load_config() {
     save_config "$config_file"
     info "Legacy secret value removed from $config_file"
   fi
+}
+
+select_connection_target() {
+  local -a connection_targets=(
+    "RDS"
+    "RDS Proxy"
+    "EC2"
+    "ECS"
+  )
+
+  declare -g CONNECTION_TARGET
+  CONNECTION_TARGET="$(select_from_options $'What do you want to connect to? ' connection_targets)"
 }
 
 bootstrap_aws_context() {
@@ -187,6 +200,8 @@ bootstrap_aws_context() {
   mapfile -t secrets < <(list_secret_names "$AWS_PROFILE" "$AWS_REGION")
   declare -g AWS_SECRET_NAME
   AWS_SECRET_NAME="$(select_from_options $'Select the AWS secret: ' secrets)"
+
+  select_connection_target
 }
 
 configure_and_save_context() {
@@ -195,11 +210,23 @@ configure_and_save_context() {
   save_config "$config_file"
 }
 
+ensure_optional_context() {
+  local config_file="$1"
+
+  if [[ -z "${CONNECTION_TARGET:-}" ]]; then
+    info "Connection target not configured yet."
+    select_connection_target
+    save_config "$config_file"
+    info "Configuration updated in $config_file"
+  fi
+}
+
 initialize_context() {
   local config_file="$1"
 
   if [[ -f "$config_file" ]]; then
     load_config "$config_file"
+    ensure_optional_context "$config_file"
     info "Configuration loaded from $config_file"
     return 0
   fi
