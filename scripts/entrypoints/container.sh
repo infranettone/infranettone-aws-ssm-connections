@@ -155,6 +155,17 @@ show_secret_preview() {
   fi
 }
 
+show_secret_json() {
+  local secret_string=""
+
+  require_command jq
+
+  secret_string="$(fetch_current_secret_string)"
+  secret_string_is_json "$secret_string" || die "The selected secret is not valid JSON."
+
+  jq . <<<"$secret_string"
+}
+
 run_project_placeholder() {
   info "Project action placeholder."
   info "Implement your custom workflow in scripts/entrypoints/container.sh."
@@ -168,6 +179,7 @@ run_main_menu() {
     "Reconfigure AWS profile/region/secret"
     "Show current configuration"
     "Show secret preview"
+    "Show secret JSON"
   )
 
   if [[ "${CONNECTION_TARGET:-}" == "RDS" && -n "${RDS_BASTION_INSTANCE_ID:-}" ]]; then
@@ -191,6 +203,9 @@ run_main_menu() {
         ;;
       "Show secret preview")
         show_secret_preview
+        ;;
+      "Show secret JSON")
+        show_secret_json
         ;;
       "Open RDS tunnel and launch psql")
         run_rds_psql_tunnel
