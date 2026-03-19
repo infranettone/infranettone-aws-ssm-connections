@@ -1,0 +1,19 @@
+services:
+  app-template:
+    container_name: app-template
+    build:
+      context: ..
+      dockerfile: main/Dockerfile
+      args:
+        AWSCLI_ARCH: ${AWSCLI_ARCH:-amd64}
+        DOCKER_GID: ${DOCKER_GID:-998}
+        HOST_UID: ${HOST_UID:-1000}
+        HOST_GID: ${HOST_GID:-1000}
+        HOST_USER: ${HOST_USER:-ubuntu}
+    tty: true
+    stdin_open: true
+    working_dir: /workspace
+    volumes:
+      - ../:/workspace
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ${HOME}/.aws:/home/${HOST_USER:-ubuntu}/.aws:ro

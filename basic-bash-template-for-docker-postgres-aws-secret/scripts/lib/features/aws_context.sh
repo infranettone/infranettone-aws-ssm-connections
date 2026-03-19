@@ -1,0 +1,189 @@
+#!/usr/bin/env bash
+
+require_command() {
+  local cmd=""
+
+  [[ "$#" -gt 0 ]] || die "require_command expects at least one command name."
+
+  for cmd in "$@"; do
+    command -v "$cmd" >/dev/null 2>&1 || die "Required command not found: $cmd"
+  done
+}
+
+split_whitespace_to_array() {
+  local raw="$1"
+  local -n output_ref="$2"
+  local normalized=""
+
+  output_ref=()
+  [[ -n "$raw" ]] || return 0
+
+  normalized="${raw//$'\t'/$'\n'}"
+  mapfile -t output_ref <<<"$normalized"
+}
+
+list_aws_profiles() {
+  require_command aws
+
+  local output=""
+  local -a profiles=()
+  local -a sorted_profiles=()
+
+  output="$(aws configure list-profiles 2>/dev/null || true)"
+  [[ -n "$output" ]] || die "No AWS profiles found. Configure one with: aws configure --profile <name>"
+
+  mapfile -t profiles <<<"$output"
+  mapfile -t sorted_profiles < <(printf "%s\n" "${profiles[@]}" | sort)
+  printf "%s\n" "${sorted_profiles[@]}"
+}
+
+list_aws_regions() {
+  local profile="$1"
+  local -a regions=()
+  local -a sorted_regions=()
+  local region_output=""
+
+  require_command aws
+
+  region_output="$(aws ec2 describe-regions \
+    --all-regions \
+    --query "Regions[].RegionName" \
+    --output text \
+    --profile "$profile" \
+    2>/dev/null || true)"
+
+  split_whitespace_to_array "$region_output" regions
+
+  if [[ "${#regions[@]}" -eq 0 ]]; then
+    regions=(eu-west-1 eu-west-3 eu-central-1 us-east-1 us-east-2 us-west-1 us-west-2)
+  fi
+
+  mapfile -t sorted_regions < <(printf "%s\n" "${regions[@]}" | sort)
+  printf "%s\n" "${sorted_regions[@]}"
+}
+
+list_secret_names() {
+  local profile="$1"
+  local region="$2"
+  local secret_output=""
+  local -a secret_names=()
+  local -a sorted_secret_names=()
+
+  require_command aws
+
+  secret_output="$(aws secretsmanager list-secrets \
+    --profile "$profile" \
+    --region "$region" \
+    --query "SecretList[].Name" \
+    --output text \
+    2>/dev/null || true)"
+
+  split_whitespace_to_array "$secret_output" secret_names
+  [[ "${#secret_names[@]}" -gt 0 ]] || die "No Secrets Manager secrets found in region '$region' for profile '$profile'."
+
+  mapfile -t sorted_secret_names < <(printf "%s\n" "${secret_names[@]}" | sort)
+  printf "%s\n" "${sorted_secret_names[@]}"
+}
+
+fetch_secret_string() {
+  local profile="$1"
+  local region="$2"
+  local secret_name="$3"
+
+  require_command aws
+
+  aws secretsmanager get-secret-value \
+    --secret-id "$secret_name" \
+    --profile "$profile" \
+    --region "$region" \
+    --query "SecretString" \
+    --output text
+}
+
+secret_string_is_json() {
+  require_command jq
+  jq -e . >/dev/null 2>&1 <<<"$SECRET_STRING"
+}
+
+get_secret_json_field() {
+  local field_name="$1"
+
+  secret_string_is_json || die "Current secret is not valid JSON."
+  jq -r --arg key "$field_name" '.[$key] // empty' <<<"$SECRET_STRING"
+}
+
+save_config() {
+  local config_file="$1"
+
+  cat >"$config_file" <<EOF
+AWS_PROFILE=$(printf "%q" "$AWS_PROFILE")
+AWS_REGION=$(printf "%q" "$AWS_REGION")
+AWS_SECRET_NAME=$(printf "%q" "$AWS_SECRET_NAME")
+SECRET_STRING=$(printf "%q" "$SECRET_STRING")
+EOF
+
+  chmod 600 "$config_file"
+}
+
+load_config() {
+  local config_file="$1"
+  local key=""
+
+  [[ -f "$config_file" ]] || die "Config file not found: $config_file"
+
+  # shellcheck disable=SC1090
+  source "$config_file"
+
+  declare -g AWS_PROFILE AWS_REGION AWS_SECRET_NAME SECRET_STRING
+
+  for key in AWS_PROFILE AWS_REGION AWS_SECRET_NAME SECRET_STRING; do
+    [[ -n "${!key:-}" ]] || die "Config file is missing required value: $key"
+  done
+}
+
+bootstrap_aws_context() {
+  local -a profiles=()
+  local -a regions=()
+  local -a secrets=()
+
+  mapfile -t profiles < <(list_aws_profiles)
+  declare -g AWS_PROFILE
+  AWS_PROFILE="$(select_from_options $'Select the AWS profile: ' profiles)"
+
+  mapfile -t regions < <(list_aws_regions "$AWS_PROFILE")
+  declare -g AWS_REGION
+  AWS_REGION="$(select_from_options $'Select the AWS region: ' regions)"
+
+  mapfile -t secrets < <(list_secret_names "$AWS_PROFILE" "$AWS_REGION")
+  declare -g AWS_SECRET_NAME
+  AWS_SECRET_NAME="$(select_from_options $'Select the AWS secret: ' secrets)"
+
+  declare -g SECRET_STRING
+  SECRET_STRING="$(fetch_secret_string "$AWS_PROFILE" "$AWS_REGION" "$AWS_SECRET_NAME")"
+}
+
+configure_and_save_context() {
+  local config_file="$1"
+  bootstrap_aws_context
+  save_config "$config_file"
+}
+
+initialize_context() {
+  local config_file="$1"
+
+  if [[ -f "$config_file" ]]; then
+    load_config "$config_file"
+    info "Configuration loaded from $config_file"
+    return 0
+  fi
+
+  info "No configuration file found. Starting setup wizard."
+  configure_and_save_context "$config_file"
+  info "Configuration saved to $config_file"
+}
+
+reconfigure_context() {
+  local config_file="$1"
+  configure_and_save_context "$config_file"
+  info "Configuration updated in $config_file"
+}

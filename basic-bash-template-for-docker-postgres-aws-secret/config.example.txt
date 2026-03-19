@@ -1,0 +1,4 @@
+AWS_PROFILE=your-profile
+AWS_REGION=eu-west-1
+AWS_SECRET_NAME=your/secret/name
+SECRET_STRING='{"example":"value"}'
