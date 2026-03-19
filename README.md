@@ -33,6 +33,13 @@ On the first run:
 
 - Docker with `docker compose`.
 - AWS credentials configured in `~/.aws`.
+- For `RDS` connections through an EC2 bastion via SSM, the bastion instance must have the AWS managed policy `AmazonSSMManagedInstanceCore`.
+- For `RDS` connections through an EC2 bastion via SSM, the bastion instance must have `amazon-ssm-agent` installed and updated. A simple way to update it is:
+
+```bash
+sudo yum install -y https://s3.amazonaws.com/ec2-downloads-windows/SSMAgent/latest/linux_amd64/amazon-ssm-agent.rpm
+sudo systemctl restart amazon-ssm-agent
+```
 
 ## Customization
 
