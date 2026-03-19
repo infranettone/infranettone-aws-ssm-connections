@@ -22,6 +22,19 @@ find_available_local_port() {
   die "Could not find an available local port for the RDS tunnel."
 }
 
+find_available_internal_port() {
+  local port=""
+
+  for port in $(seq 25432 25480); do
+    if ! timeout 1 bash -lc "</dev/tcp/127.0.0.1/$port" >/dev/null 2>&1; then
+      printf "%s" "$port"
+      return 0
+    fi
+  done
+
+  die "Could not find an available internal port for the RDS tunnel."
+}
+
 wait_for_local_port() {
   local port="$1"
   local max_attempts="${2:-20}"
@@ -39,11 +52,17 @@ wait_for_local_port() {
 
 cleanup_rds_tunnel() {
   local ssm_pid="${1:-}"
-  local log_file="${2:-}"
+  local relay_pid="${2:-}"
+  local log_file="${3:-}"
 
   if [[ -n "$ssm_pid" ]] && kill -0 "$ssm_pid" >/dev/null 2>&1; then
     kill "$ssm_pid" >/dev/null 2>&1 || true
     wait "$ssm_pid" >/dev/null 2>&1 || true
+  fi
+
+  if [[ -n "$relay_pid" ]] && kill -0 "$relay_pid" >/dev/null 2>&1; then
+    kill "$relay_pid" >/dev/null 2>&1 || true
+    wait "$relay_pid" >/dev/null 2>&1 || true
   fi
 
   if [[ -n "$log_file" ]]; then
@@ -59,13 +78,15 @@ run_rds_psql_tunnel() {
   local db_user=""
   local db_password=""
   local local_port=""
+  local internal_port=""
   local log_file=""
   local ssm_pid=""
+  local relay_pid=""
 
   [[ "${CONNECTION_TARGET:-}" == "RDS" ]] || die "The current connection target is not RDS."
   [[ -n "${RDS_BASTION_INSTANCE_ID:-}" ]] || die "RDS bastion instance is not configured."
 
-  require_command aws jq psql session-manager-plugin timeout
+  require_command aws jq psql session-manager-plugin socat timeout
 
   secret_string="$(fetch_current_secret_string)"
   secret_string_is_json "$secret_string" || die "The selected AWS secret must be valid JSON for the RDS connection."
@@ -87,6 +108,7 @@ run_rds_psql_tunnel() {
   [[ -n "$db_name" ]] || db_name="postgres"
 
   local_port="$(find_available_local_port)"
+  internal_port="$(find_available_internal_port)"
   log_file="$(mktemp /tmp/rds-ssm-tunnel.XXXXXX.log)"
 
   info "Starting SSM port forwarding session to $db_host:$db_port through $RDS_BASTION_INSTANCE_ID"
@@ -95,13 +117,13 @@ run_rds_psql_tunnel() {
     --profile "$AWS_PROFILE" \
     --region "$AWS_REGION" \
     --document-name "AWS-StartPortForwardingSessionToRemoteHost" \
-    --parameters "host=$db_host,portNumber=$db_port,localPortNumber=$local_port" \
+    --parameters "host=$db_host,portNumber=$db_port,localPortNumber=$internal_port" \
     >"$log_file" 2>&1 &
   ssm_pid=$!
 
-  trap 'cleanup_rds_tunnel "$ssm_pid" "$log_file"' RETURN
+  trap 'cleanup_rds_tunnel "$ssm_pid" "$relay_pid" "$log_file"' RETURN
 
-  if ! wait_for_local_port "$local_port" 20; then
+  if ! wait_for_local_port "$internal_port" 20; then
     warn "SSM tunnel did not become available in time."
     if [[ -s "$log_file" ]]; then
       warn "SSM log:"
@@ -110,7 +132,21 @@ run_rds_psql_tunnel() {
     return 1
   fi
 
-  info "Tunnel ready on localhost:$local_port"
+  info "Exposing tunnel on 0.0.0.0:$local_port for host access"
+  socat TCP-LISTEN:"$local_port",bind=0.0.0.0,reuseaddr,fork TCP:127.0.0.1:"$internal_port" \
+    > /dev/null 2>&1 &
+  relay_pid=$!
+
+  if ! wait_for_local_port "$local_port" 20; then
+    warn "Tunnel relay did not become available in time."
+    if [[ -s "$log_file" ]]; then
+      warn "SSM log:"
+      sed 's/^/  /' "$log_file" >&2
+    fi
+    return 1
+  fi
+
+  info "Tunnel ready on localhost:$local_port and host:${local_port}"
   info "Opening interactive psql session against database '$db_name'"
 
   PGPASSWORD="$db_password" psql \
@@ -120,7 +156,7 @@ run_rds_psql_tunnel() {
     --dbname="$db_name"
 
   trap - RETURN
-  cleanup_rds_tunnel "$ssm_pid" "$log_file"
+  cleanup_rds_tunnel "$ssm_pid" "$relay_pid" "$log_file"
 }
 
 show_current_context() {

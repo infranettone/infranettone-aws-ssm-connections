@@ -20,6 +20,7 @@ RUN apt-get update && \
       less \
       postgresql-client \
       ripgrep \
+      socat \
       shellcheck \
       sudo \
       unzip && \
