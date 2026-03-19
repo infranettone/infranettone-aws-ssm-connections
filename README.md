@@ -6,6 +6,7 @@ Minimal template for projects that need:
 - Bash scripts organized by `entrypoints` and `lib`.
 - Interactive selection of `AWS profile`, `AWS region`, `AWS secret`, and connection target.
   For `RDS`, it also prompts for the EC2 bastion instance to use via SSM.
+- When the target is `RDS`, the menu can open an SSM port-forwarding tunnel and launch an interactive `psql` session from the container.
 - Local persistence of the AWS context in `config.txt` without storing secret values.
 
 ## Structure
@@ -38,3 +39,4 @@ On the first run:
 - Replace the placeholders in `scripts/entrypoints/container.sh`.
 - If your secret contains JSON, you can read keys with `get_secret_json_field`; the value is fetched from Secrets Manager when needed.
 - If you need more tooling, extend it in `main/Dockerfile`.
+- The RDS workflow expects a JSON secret with `host`, `port`, `username`, `password`, and optionally `dbname` or `database`.

@@ -9,6 +9,120 @@ source "$ROOT_DIR/scripts/lib/core/ui.sh"
 source "$ROOT_DIR/scripts/lib/features/aws_context.sh"
 source "$ROOT_DIR/scripts/lib/features/quality.sh"
 
+find_available_local_port() {
+  local port=""
+
+  for port in 15432 15433 15434 15435 15436 15437 15438 15439 15440; do
+    if ! timeout 1 bash -lc "</dev/tcp/127.0.0.1/$port" >/dev/null 2>&1; then
+      printf "%s" "$port"
+      return 0
+    fi
+  done
+
+  die "Could not find an available local port for the RDS tunnel."
+}
+
+wait_for_local_port() {
+  local port="$1"
+  local max_attempts="${2:-20}"
+  local attempt=""
+
+  for ((attempt = 1; attempt <= max_attempts; attempt++)); do
+    if timeout 1 bash -lc "</dev/tcp/127.0.0.1/$port" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 1
+  done
+
+  return 1
+}
+
+cleanup_rds_tunnel() {
+  local ssm_pid="${1:-}"
+  local log_file="${2:-}"
+
+  if [[ -n "$ssm_pid" ]] && kill -0 "$ssm_pid" >/dev/null 2>&1; then
+    kill "$ssm_pid" >/dev/null 2>&1 || true
+    wait "$ssm_pid" >/dev/null 2>&1 || true
+  fi
+
+  if [[ -n "$log_file" ]]; then
+    rm -f "$log_file"
+  fi
+}
+
+run_rds_psql_tunnel() {
+  local secret_string=""
+  local db_host=""
+  local db_port=""
+  local db_name=""
+  local db_user=""
+  local db_password=""
+  local local_port=""
+  local log_file=""
+  local ssm_pid=""
+
+  [[ "${CONNECTION_TARGET:-}" == "RDS" ]] || die "The current connection target is not RDS."
+  [[ -n "${RDS_BASTION_INSTANCE_ID:-}" ]] || die "RDS bastion instance is not configured."
+
+  require_command aws jq psql session-manager-plugin timeout
+
+  secret_string="$(fetch_current_secret_string)"
+  secret_string_is_json "$secret_string" || die "The selected AWS secret must be valid JSON for the RDS connection."
+
+  db_host="$(get_secret_json_field "host" "$secret_string" || true)"
+  db_port="$(get_secret_json_field "port" "$secret_string" || true)"
+  db_name="$(get_secret_json_field "dbname" "$secret_string" || true)"
+  db_user="$(get_secret_json_field "username" "$secret_string" || true)"
+  db_password="$(get_secret_json_field "password" "$secret_string" || true)"
+
+  [[ -n "$db_host" ]] || die "The selected secret does not contain the required 'host' field."
+  [[ -n "$db_port" ]] || die "The selected secret does not contain the required 'port' field."
+  [[ -n "$db_user" ]] || die "The selected secret does not contain the required 'username' field."
+  [[ -n "$db_password" ]] || die "The selected secret does not contain the required 'password' field."
+
+  if [[ -z "$db_name" ]]; then
+    db_name="$(get_secret_json_field "database" "$secret_string" || true)"
+  fi
+  [[ -n "$db_name" ]] || db_name="postgres"
+
+  local_port="$(find_available_local_port)"
+  log_file="$(mktemp /tmp/rds-ssm-tunnel.XXXXXX.log)"
+
+  info "Starting SSM port forwarding session to $db_host:$db_port through $RDS_BASTION_INSTANCE_ID"
+  aws ssm start-session \
+    --target "$RDS_BASTION_INSTANCE_ID" \
+    --profile "$AWS_PROFILE" \
+    --region "$AWS_REGION" \
+    --document-name "AWS-StartPortForwardingSessionToRemoteHost" \
+    --parameters "host=$db_host,portNumber=$db_port,localPortNumber=$local_port" \
+    >"$log_file" 2>&1 &
+  ssm_pid=$!
+
+  trap 'cleanup_rds_tunnel "$ssm_pid" "$log_file"' RETURN
+
+  if ! wait_for_local_port "$local_port" 20; then
+    warn "SSM tunnel did not become available in time."
+    if [[ -s "$log_file" ]]; then
+      warn "SSM log:"
+      sed 's/^/  /' "$log_file" >&2
+    fi
+    return 1
+  fi
+
+  info "Tunnel ready on localhost:$local_port"
+  info "Opening interactive psql session against database '$db_name'"
+
+  PGPASSWORD="$db_password" psql \
+    --host=127.0.0.1 \
+    --port="$local_port" \
+    --username="$db_user" \
+    --dbname="$db_name"
+
+  trap - RETURN
+  cleanup_rds_tunnel "$ssm_pid" "$log_file"
+}
+
 show_current_context() {
   info "Current configuration:"
   info "  AWS profile: $AWS_PROFILE"
@@ -48,10 +162,19 @@ run_project_placeholder() {
 
 run_main_menu() {
   local selected_option=""
-  local -a menu_options=(
+  local -a menu_options=()
+
+  menu_options=(
     "Reconfigure AWS profile/region/secret"
     "Show current configuration"
     "Show secret preview"
+  )
+
+  if [[ "${CONNECTION_TARGET:-}" == "RDS" && -n "${RDS_BASTION_INSTANCE_ID:-}" ]]; then
+    menu_options+=("Open RDS tunnel and launch psql")
+  fi
+
+  menu_options+=(
     "Run project placeholder"
     "Exit"
   )
@@ -68,6 +191,9 @@ run_main_menu() {
         ;;
       "Show secret preview")
         show_secret_preview
+        ;;
+      "Open RDS tunnel and launch psql")
+        run_rds_psql_tunnel
         ;;
       "Run project placeholder")
         run_project_placeholder

@@ -17,3 +17,5 @@ services:
       - ../:/workspace
       - /var/run/docker.sock:/var/run/docker.sock
       - ${HOME}/.aws:/home/${HOST_USER:-ubuntu}/.aws:ro
+    ports:
+      - "15432-15440:15432-15440"

@@ -18,6 +18,7 @@ RUN apt-get update && \
       git \
       jq \
       less \
+      postgresql-client \
       ripgrep \
       shellcheck \
       sudo \
@@ -33,6 +34,15 @@ RUN case "${AWSCLI_ARCH}" in \
     unzip -q /tmp/awscliv2.zip -d /tmp && \
     /tmp/aws/install && \
     rm -rf /tmp/aws /tmp/awscliv2.zip
+
+RUN case "${AWSCLI_ARCH}" in \
+      amd64) ssm_plugin_arch="ubuntu_64bit" ;; \
+      arm64) ssm_plugin_arch="ubuntu_arm64" ;; \
+      *) ssm_plugin_arch="ubuntu_64bit" ;; \
+    esac && \
+    curl -fsSL "https://s3.amazonaws.com/session-manager-downloads/plugin/latest/${ssm_plugin_arch}/session-manager-plugin.deb" -o /tmp/session-manager-plugin.deb && \
+    dpkg -i /tmp/session-manager-plugin.deb && \
+    rm -f /tmp/session-manager-plugin.deb
 
 RUN set -eux; \
     if getent group "${DOCKER_GID}" >/dev/null; then \
